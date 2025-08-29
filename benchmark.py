@@ -1,56 +1,179 @@
 import json
+import uuid
+from google.genai import types
 import sys
 from typing import List, Dict, Any
 
+SHOW_DIFF_CASES = True  # 开关：是否打印 solutions 差异 case
+
 
 def process_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Processes the raw data to prepare it for solution evaluation.
-    This function simply returns the data as is, as all information is already
-    present in the JSON files.
-    """
+    """这里暂时不做处理，直接返回"""
     return data
 
 
 def original_solution(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    This function now correctly uses the 'match_status' field from the
-    original JSON data as the result of the 'Original Solution' for benchmarking.
-    """
+    """直接用原始 JSON 的 match_status"""
     results = []
     for item in data:
         new_item = item.copy()
-        # Use the match_status directly from the raw JSON data as the solution's result
         new_item["solution_match_status"] = new_item.get("match_status")
         results.append(new_item)
     return results
 
 
 def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Placeholder for the new LLM-based room matching solution.
-    You can implement your logic here. For now, it copies the original solution.
-    """
-    print("--- Running LLM_solution_1 (Placeholder) ---", file=sys.stderr)
-    return original_solution(data)  # Currently just a copy of the original solution
+    """用 LLM 判断 match"""
+    print("--- Running LLM_solution_1 (LLM-based solution) ---", file=sys.stderr)
+
+    try:
+        from google import genai
+
+        client = genai.Client(
+            vertexai=True, project="tvlk-shared-services-stg", location="global"
+        )
+    except ImportError:
+        print(
+            "⚠️ google-genai not installed, fallback to original solution",
+            file=sys.stderr,
+        )
+        return original_solution(data)
+
+    results = []
+    for item in data:
+        new_item = item.copy()
+        # generate a uuid
+        uuid_str = item.get("uuid_str", "")
+
+        tvl_data = item.get("tvl", {})
+        competitor_data = item.get("competitor", {})
+
+        # 提取字段
+        tvl_size = tvl_data.get("hard_metrics", {}).get("room_size")
+        tvl_name = tvl_data.get("soft_metrics", {}).get("room_group_name")
+        tvl_bed_type = tvl_data.get("soft_metrics", {}).get("bed_type")
+        tvl_occupancy = tvl_data.get("soft_metrics", {}).get("max_occupancy")
+        tvl_breakfast = (
+            tvl_data.get("soft_metrics", {})
+            .get("amenities", {})
+            .get("is_with_breakfast")
+        )
+        tvl_refundable = (
+            tvl_data.get("soft_metrics", {}).get("amenities", {}).get("is_refundable")
+        )
+        tvl_cancellation_policy_code = (
+            tvl_data.get("soft_metrics", {})
+            .get("amenities", {})
+            .get("cancellation_policy_code")
+        )
+
+        comp_size = competitor_data.get("hard_metrics", {}).get("room_size")
+        comp_name = competitor_data.get("soft_metrics", {}).get("room_group_name")
+        comp_bed_type = competitor_data.get("soft_metrics", {}).get("bed_type")
+        comp_occupancy = competitor_data.get("soft_metrics", {}).get("max_occupancy")
+        comp_breakfast = (
+            competitor_data.get("soft_metrics", {})
+            .get("amenities", {})
+            .get("is_with_breakfast")
+        )
+        comp_refundable = (
+            competitor_data.get("soft_metrics", {})
+            .get("amenities", {})
+            .get("is_refundable")
+        )
+        comp_cancellation_policy_code = (
+            competitor_data.get("soft_metrics", {})
+            .get("amenities", {})
+            .get("cancellation_policy_code")
+        )
+
+        # 构造 prompt
+        prompt = f"""
+You are an expert in hotel room matching. Focus on human-friendly understanding, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
+
+**Rules to consider:**
+
+1. **Room Name**:
+
+   * Core room type words must match (e.g., 'Superior', 'Deluxe').
+   * Differences in extra descriptors like 'City View', 'Non-Smoking', 'Sea View' should be ignored.
+
+2. **Bed Type**:
+
+   * Beds that are partially compatible should be treated as matched (e.g., 'ONE\_DOUBLE\_BED\_OR\_TWO\_SINGLE\_BED' vs '1 Double').
+   * Queen, King, Double, or Twin beds are generally compatible; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
+   * If bed type is missing in TVL or COMP, assume it is compatible with the other room’s bed type.
+
+3. **Maximum Occupancy**:
+
+   * If missing, infer from bed type. Only mismatch if occupancy is clearly incompatible with bed type.
+
+4. **Breakfast / Refundable**:
+
+   * Differences here are soft indicators; do not determine mismatch unless critical for business.
+
+5. **Overall Principle**:
+
+   * Core room type + bed type are the key indicators.
+   * When in doubt, favor **matching** to maximize coverage.
+
+Respond strictly with **"matched"** or **"mismatched"** only. Do not include any explanations.
+---
+TVL Room:
+- Name: {tvl_name}
+- Bed Type: {tvl_bed_type}
+- Occupancy: {tvl_occupancy}
+- Breakfast: {comp_breakfast}
+- Refundable: {comp_refundable}
+
+Competitor Room:
+- Name: {comp_name}
+- Bed Type: {comp_bed_type}
+- Occupancy: {comp_occupancy}
+- Breakfast: {comp_breakfast}
+- Refundable: {comp_refundable}
+"""
+
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
+                ),
+            )
+
+            llm_decision = response.text.strip().lower()
+            if llm_decision in ["matched", "mismatched"]:
+                new_item["solution_match_status"] = llm_decision
+            else:
+                print(f"⚠️ Unexpected LLM response: {response.text}", file=sys.stderr)
+                new_item["solution_match_status"] = "mismatched"
+
+            # 🔎 调试：打印带 uuid 的 Prompt Data
+            print(
+                f"\n[Input Data - {uuid_str}] "
+                f"TVL:({tvl_name},{tvl_size},{tvl_bed_type},{tvl_occupancy},{tvl_breakfast},{tvl_refundable},{tvl_cancellation_policy_code}) "
+                f"VS COMP:({comp_name},{comp_size},{comp_bed_type},{comp_occupancy},{comp_breakfast},{comp_refundable},{comp_cancellation_policy_code}) "
+                f"=> LLM: {new_item['solution_match_status']}",
+                file=sys.stderr,
+            )
+
+        except Exception as e:
+            print(f"❌ Error calling LLM: {e}", file=sys.stderr)
+            new_item["solution_match_status"] = "mismatched"
+
+        results.append(new_item)
+
+    return results
 
 
 def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]):
-    """
-    Evaluates a solution and prints its inaccuracy rate and F1 score,
-    along with additional size-related metrics.
-
-    The 'Ground Truth' for this evaluation is defined as:
-    A match is considered 'True' if the room size difference is <= 1.0 sqm.
-    This is a proxy for the lack of a perfect ground truth in the data.
-    """
+    """计算 inaccuracy、F1"""
     total_matched_by_solution = 0
     inaccurate_matches = 0
     total_size_error = 0
-
-    true_positives = 0
-    false_positives = 0
-    false_negatives = 0
+    true_positives = false_positives = false_negatives = 0
 
     for item in transformed_data:
         tvl_size_str = item.get("tvl", {}).get("hard_metrics", {}).get("room_size")
@@ -58,37 +181,26 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
             item.get("competitor", {}).get("hard_metrics", {}).get("room_size")
         )
 
-        tvl_size = None
-        competitor_size = None
-
         try:
-            if tvl_size_str is not None:
-                tvl_size = float(tvl_size_str)
-            if competitor_size_str is not None:
-                competitor_size = float(competitor_size_str)
+            tvl_size = float(tvl_size_str) if tvl_size_str is not None else None
+            competitor_size = (
+                float(competitor_size_str) if competitor_size_str is not None else None
+            )
         except (ValueError, TypeError):
             continue
         if tvl_size is None or competitor_size is None:
             continue
 
-        # print(tvl_size, competitor_size)
-        # Our proxy 'Ground Truth': Is it a true match based on size?
-        is_true_match = False
-        if abs(tvl_size - competitor_size) <= 1.0:
-            is_true_match = True
-
+        # ground truth: 尺寸差 <= 1 认为 true match
+        is_true_match = abs(tvl_size - competitor_size) <= 1.0
         solution_match_status = item.get("solution_match_status")
 
         if solution_match_status == "matched":
             total_matched_by_solution += 1
             if not is_true_match:
-                print(
-                    f"  Inaccurate Match Detected: TVL Size={tvl_size}, Competitor Size={competitor_size}"
-                )
                 inaccurate_matches += 1
                 false_positives += 1
-                if tvl_size is not None and competitor_size is not None:
-                    total_size_error += abs(tvl_size - competitor_size)
+                total_size_error += abs(tvl_size - competitor_size)
             else:
                 true_positives += 1
         elif solution_match_status == "mismatched":
@@ -96,127 +208,197 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
                 false_negatives += 1
 
     inaccuracy_rate = (
-        (inaccurate_matches / total_matched_by_solution) * 100
-        if total_matched_by_solution > 0
+        (inaccurate_matches / total_matched_by_solution * 100)
+        if total_matched_by_solution
         else 0
     )
-    print("total_size_error:", total_size_error)
-    print(f"inaccurate_matches: {inaccurate_matches}")
-    average_size_error_inaccurate = (
-        total_size_error / inaccurate_matches if inaccurate_matches > 0 else 0
+    avg_size_error = (
+        (total_size_error / inaccurate_matches) if inaccurate_matches else 0
     )
 
     precision = (
         true_positives / (true_positives + false_positives)
-        if (true_positives + false_positives) > 0
+        if (true_positives + false_positives)
         else 0
     )
     recall = (
         true_positives / (true_positives + false_negatives)
-        if (true_positives + false_negatives) > 0
+        if (true_positives + false_negatives)
         else 0
     )
     f1_score = (
-        2 * (precision * recall) / (precision + recall)
-        if (precision + recall) > 0
-        else 0
+        2 * (precision * recall) / (precision + recall) if (precision + recall) else 0
     )
 
-    print("---")
+    print("\n---")
     print(f"Results for '{solution_name}':")
     print(f"Total entries evaluated: {len(transformed_data)}")
     print(f"Total matched by solution: {total_matched_by_solution}")
-    print(f"Total inaccurate matches (size diff > 1 sqm): {inaccurate_matches}")
+    print(f"Total inaccurate matches (>1 sqm diff): {inaccurate_matches}")
     print(f"Inaccuracy Rate: {inaccuracy_rate:.2f}%")
-    print(
-        f"Average Size Error for Inaccurate Matches: {average_size_error_inaccurate:.2f} sqm"
-    )
+    print(f"Average Size Error (inaccurates only): {avg_size_error:.2f} sqm")
     print(f"F1 Score: {f1_score:.4f}")
     print("---")
 
 
 def print_size_summary(all_data: List[Dict[str, Any]]):
-    """
-    Prints a summary of the room sizes for both TVL and competitor data.
-    """
-    tvl_sizes = []
-    competitor_sizes = []
-
+    """打印 size 分布"""
+    tvl_sizes, competitor_sizes = [], []
     for item in all_data:
         try:
-            tvl_size_str = item.get("tvl", {}).get("hard_metrics", {}).get("room_size")
-            if tvl_size_str is not None:
-                tvl_sizes.append(float(tvl_size_str))
-
-            competitor_size_str = (
-                item.get("competitor", {}).get("hard_metrics", {}).get("room_size")
-            )
-            if competitor_size_str is not None:
-                competitor_sizes.append(float(competitor_size_str))
+            if item.get("tvl", {}).get("hard_metrics", {}).get("room_size"):
+                tvl_sizes.append(float(item["tvl"]["hard_metrics"]["room_size"]))
+            if item.get("competitor", {}).get("hard_metrics", {}).get("room_size"):
+                competitor_sizes.append(
+                    float(item["competitor"]["hard_metrics"]["room_size"])
+                )
         except (ValueError, TypeError):
             continue
 
-    def get_summary(sizes):
-        if not sizes:
-            return "N/A", "N/A", "N/A"
-        return min(sizes), max(sizes), sum(sizes) / len(sizes)
+    def summary(sizes):
+        return (
+            (min(sizes), max(sizes), sum(sizes) / len(sizes))
+            if sizes
+            else ("N/A", "N/A", "N/A")
+        )
 
-    tvl_min, tvl_max, tvl_avg = get_summary(tvl_sizes)
-    comp_min, comp_max, comp_avg = get_summary(competitor_sizes)
+    tvl_min, tvl_max, tvl_avg = summary(tvl_sizes)
+    comp_min, comp_max, comp_avg = summary(competitor_sizes)
 
     print("\n=== Room Size Distribution Summary ===")
-    print(
-        f"TVL Room Sizes (min/max/avg): {tvl_min:.2f} / {tvl_max:.2f} / {tvl_avg:.2f} sqm"
-    )
-    print(
-        f"Competitor Room Sizes (min/max/avg): {comp_min:.2f} / {comp_max:.2f} / {comp_avg:.2f} sqm"
-    )
+    print(f"TVL Sizes: {tvl_min} / {tvl_max} / {tvl_avg}")
+    print(f"Competitor Sizes: {comp_min} / {comp_max} / {comp_avg}")
     print("====================================")
 
 
-def main():
-    """
-    Main function to run the benchmarking process.
-    """
-    print("Starting benchmark process...")
-    files_to_process = [
-        "./data/new_sample_20250827_batch_1.json",
-        "./data/new_sample_20250827_batch_2.json",
-    ]
-    all_raw_data = []
-
-    for file_path in files_to_process:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                all_raw_data.extend(json.load(f))
-        except FileNotFoundError:
-            print(f"Error: The file '{file_path}' was not found.", file=sys.stderr)
-            continue
-        except json.JSONDecodeError:
-            print(
-                f"Error: The file '{file_path}' is not a valid JSON.", file=sys.stderr
-            )
-            continue
-        except Exception as e:
-            print(
-                f"An unexpected error occurred while processing {file_path}: {e}",
-                file=sys.stderr,
-            )
-            continue
-
-    if not all_raw_data:
-        print("No data was processed. Exiting.")
+def compare_solutions(
+    input_data: List[Dict[str, Any]], solutions: Dict[str, List[Dict[str, Any]]]
+):
+    """对比不同 solution 的结果"""
+    if not SHOW_DIFF_CASES:
         return
 
-    print_size_summary(all_raw_data)
+    print("\n=== Cases Table ===")
+    header = [
+        "UUID",
+        "Case ID",
+        "TVL Room Name",
+        "TVL Size",
+        "COMP Room Name",
+        "COMP Size",
+        "Original Match",
+        "LLM Match",
+        "equal?",
+    ]
+    print(
+        "{:<36} | {:<8} | {:<35} | {:<8} | {:<25} | {:<8} | {:<14} | {:<10}| {:<10}".format(
+            *header
+        )
+    )
 
-    # Run and evaluate Original Solution
-    original_results = original_solution(all_raw_data)
+    print("-" * 150)
+    for i, (item, orig_item, llm_item) in enumerate(
+        zip(input_data, solutions["Original Solution"], solutions["LLM Solution 1"])
+    ):
+        uuid_str = item.get("uuid_str") or ""
+        case_id = item.get("tvl_id") or f"case_{i}"
+        tvl_name = (
+            item.get("tvl", {}).get("soft_metrics", {}).get("room_group_name") or ""
+        )
+        tvl_size = item.get("tvl", {}).get("hard_metrics", {}).get("room_size")
+        tvl_size = "" if tvl_size is None else tvl_size
+        comp_name = (
+            item.get("competitor", {}).get("soft_metrics", {}).get("room_group_name")
+            or ""
+        )
+        comp_size = item.get("competitor", {}).get("hard_metrics", {}).get("room_size")
+        comp_size = "" if comp_size is None else comp_size
+        original_status = (
+            solutions["Original Solution"][i].get("solution_match_status") or ""
+        )
+        llm_status = solutions["LLM Solution 1"][i].get("solution_match_status") or ""
+        print(
+            "{:<36} | {:<8} | {:<35} | {:<8} | {:<25} | {:<8} | {:<14} | {:<10} | {:<10}".format(
+                uuid_str,
+                case_id,
+                tvl_name,
+                tvl_size,
+                comp_name,
+                comp_size,
+                original_status,
+                llm_status,
+                "equal" if original_status == llm_status else "DIFF",
+            )
+        )
+    print("====================================\n")
+
+
+def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """对 input_data 去重，如果所有字段的值都一样就去掉重复项"""
+    seen = set()
+    deduped = []
+    for item in data:
+        # 只要 dict 的 key-value 对完全一样，就算重复
+        item_key = json.dumps(item, sort_keys=True)
+        if item_key not in seen:
+            seen.add(item_key)
+            deduped.append(item)
+    print(
+        f"去重前: {len(data)} 条, 去重后: {len(deduped)} 条, 去掉: {len(data) - len(deduped)} 条"
+    )
+    return deduped
+
+
+def main():
+    print("Starting benchmark process...")
+    files_to_process = ["./data/new_sample_20250827_batch_1.json"]
+    all_raw_data = []
+    for path in files_to_process:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                all_raw_data.extend(json.load(f))
+        except Exception as e:
+            print(f"⚠️ Error loading {path}: {e}", file=sys.stderr)
+
+    if not all_raw_data:
+        print("No data loaded. Exit.")
+        return
+
+    input_data = [
+        item
+        for item in all_raw_data
+        if "tvl" in item
+        and "competitor" in item
+        and "hard_metrics" in item.get("tvl", {})
+        and "room_size" in item["tvl"]["hard_metrics"]
+        and "soft_metrics" in item["tvl"]
+        and "room_group_name" in item["tvl"]["soft_metrics"]
+        and item["tvl"]["soft_metrics"]["room_group_name"] is not None
+        and item["competitor"]["soft_metrics"]["room_group_name"] is not None
+    ]
+
+    input_data = deduplicate_data(input_data)
+
+    for item in input_data:
+        item["uuid_str"] = str(uuid.uuid4())
+
+    start = 205
+    cnt = 30
+    input_data = input_data[start : start + cnt]
+    print_size_summary(input_data)
+
+    # Run solutions
+    original_results = original_solution(input_data)
     evaluate_solution("Original Solution", original_results)
 
-    # # Run and evaluate New LLM Solution 1
-    # llm_results = LLM_solution_1(all_raw_data)
-    # evaluate_solution("LLM Solution 1", llm_results)
+    llm_results = LLM_solution_1(input_data)
+    evaluate_solution("LLM Solution 1", llm_results)
+
+    # Compare
+    compare_solutions(
+        input_data,
+        {"Original Solution": original_results, "LLM Solution 1": llm_results},
+    )
 
 
 if __name__ == "__main__":
