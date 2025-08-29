@@ -89,20 +89,23 @@ def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         # 构造 prompt
         prompt = f"""
-You are an expert in hotel room matching. Focus on human-friendly understanding, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
+You are an expert in hotel room matching. Focus on **human-friendly understanding**, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
 
 **Rules to consider:**
 
 1. **Room Name**:
 
    * Core room type words must match (e.g., 'Superior', 'Deluxe').
-   * Differences in extra descriptors like 'City View', 'Non-Smoking', 'Sea View' should be ignored.
+   * Differences in minor descriptors like "City View", "Non-Smoking", "Sea View" can be ignored.
+   * Words that indicate **upgrades or additional features** (e.g., "Plus", "Premier", "Ocean") should be treated as a mismatch **only if they change the core room experience**.
+   * If the **core concept** is different (e.g., 'Thematic Studio' vs 'Standard Studio'), treat as mismatched.
 
 2. **Bed Type**:
 
    * Beds that are partially compatible should be treated as matched (e.g., 'ONE\_DOUBLE\_BED\_OR\_TWO\_SINGLE\_BED' vs '1 Double').
-   * Queen, King, Double, or Twin beds are generally compatible; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
+   * Queen, King, Double, or Twin beds are **generally compatible**; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
    * If bed type is missing in TVL or COMP, assume it is compatible with the other room’s bed type.
+   * Treat “KING” and “1 king bed” as equivalent; similarly “DOUBLE” and “1 double bed”.
 
 3. **Maximum Occupancy**:
 
@@ -110,14 +113,15 @@ You are an expert in hotel room matching. Focus on human-friendly understanding,
 
 4. **Breakfast / Refundable**:
 
-   * Differences here are soft indicators; do not determine mismatch unless critical for business.
+   * Differences here are soft indicators; do **not** determine mismatch unless critical for business.
 
 5. **Overall Principle**:
 
-   * Core room type + bed type are the key indicators.
+   * Core room type + bed type are the **key indicators**.
+   * Minor differences in descriptors or extra words should **not prevent matching**.
    * When in doubt, favor **matching** to maximize coverage.
 
-Respond strictly with **"matched"** or **"mismatched"** only. Do not include any explanations.
+Respond strictly with **"matched"** or **"mismatched"** only. **Do not include any explanations.**
 ---
 TVL Room:
 - Name: {tvl_name}
@@ -291,7 +295,7 @@ def compare_solutions(
         "equal?",
     ]
     print(
-        "{:<36} | {:<8} | {:<35} | {:<8} | {:<25} | {:<8} | {:<14} | {:<10}| {:<10}".format(
+        "{:<36} | {:<8} | {:<35} | {:<8} | {:<35} | {:<8} | {:<14} | {:<10}| {:<10}".format(
             *header
         )
     )
@@ -318,7 +322,7 @@ def compare_solutions(
         )
         llm_status = solutions["LLM Solution 1"][i].get("solution_match_status") or ""
         print(
-            "{:<36} | {:<8} | {:<35} | {:<8} | {:<25} | {:<8} | {:<14} | {:<10} | {:<10}".format(
+            "{:<36} | {:<8} | {:<35} | {:<8} | {:<35} | {:<8} | {:<14} | {:<10} | {:<10}".format(
                 uuid_str,
                 case_id,
                 tvl_name,
@@ -382,8 +386,8 @@ def main():
     for item in input_data:
         item["uuid_str"] = str(uuid.uuid4())
 
-    start = 205
-    cnt = 30
+    start = 0
+    cnt = 200
     input_data = input_data[start : start + cnt]
     print_size_summary(input_data)
 
