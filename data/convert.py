@@ -10,19 +10,22 @@ AUTH0_TOKEN ="eyJraWQiOiJYRGJhaHFMdXhRdUFDTHhMaXZoVkRjV2g2OXo2cXNsSndUUGdyWlQzNW
 COOKIE_VALUE = "WZeAsLU/+p+1gbNHoadMBbIwuhbV6z51rHb0B/PhHOSDgx7ICI3vfCHSHg2Qu20j5JegFtxTYKwU218KCJ3541Un5LuKMyfaKrCJIL8Yz2NO0RPzfAnl85lzkC1kesB/2rAnT3UlsprBH8O8pxbytT3Rv9zT5zsNOfg+1Q1ej5FrONCgEBDHHk2jiuXPfY27ioCfAxKVWHdbmlcKO759n6mx2Pyftbyd3CDH3h88mC9MLvyYuSTYufwOIR7M9ysnVgldg5PBEzF9L92npeEimcSf+1g7CWK9999e~djAy"
 
 
-
-
-
+@lru_cache(maxsize=256)
 def fetch_room_details(hotel_room_id):
     """
     Fetches room details from the external API using the provided hotel_room_id.
     
+    The @lru_cache decorator caches the results of this function.
+    Subsequent calls with the same hotel_room_id will return the cached result
+    instead of making a new API request.
+
     Args:
         hotel_room_id (str): The ID of the hotel room to fetch.
         
     Returns:
         dict: A dictionary containing the fetched room data, or an empty dictionary if the request fails.
     """
+    print(f"Fetching details for TVL Room ID: {hotel_room_id}")
     url = "https://acdtool-be.acd.traveloka.com/api/v2/hotel/content/room/function"
     headers = {
         "accept": "*/*",
@@ -125,7 +128,6 @@ def transform_data(input_data, num_to_process='all'):
             
             tvl_data_from_api = {}
             if tvl_room_id:
-                print(f"Fetching details for TVL Room ID: {tvl_room_id}")
                 tvl_data_from_api = fetch_room_details(tvl_room_id)
             
             size_data = tvl_data_from_api.get('size') if tvl_data_from_api else None
@@ -207,13 +209,28 @@ def transform_data(input_data, num_to_process='all'):
 
 def process_file(file_path):
     """
-    Reads a JSON file, transforms its content, and prints the result.
+    Reads a JSON file, transforms its content, and saves the result to a new file.
     """
     try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError
+
         with open(file_path, 'r') as f:
             data = json.load(f)
-            transformed_data = transform_data(data, num_to_process=2) 
-            print(json.dumps(transformed_data, indent=2))
+            # Process all data or a limited number, e.g., for testing
+            transformed_data = transform_data(data, num_to_process='all')
+            
+            # Construct the new file path
+            dir_name, base_name = os.path.split(file_path)
+            new_file_name = f"new_{base_name}"
+            new_file_path = os.path.join(dir_name, new_file_name)
+
+            # Write the transformed data to the new JSON file
+            with open(new_file_path, 'w') as out_f:
+                json.dump(transformed_data, out_f, indent=2)
+            
+            print(f"Transformation complete. Data saved to '{new_file_path}'.")
+
     except FileNotFoundError:
         print(f"Error: The file '{file_path}' was not found.", file=sys.stderr)
     except json.JSONDecodeError:
@@ -222,4 +239,4 @@ def process_file(file_path):
         print(f"An unexpected error occurred: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
-    process_file('./data/sample_20250827_batch_1.json')
+    process_file('./data/sample_20250827_batch_2.json')
