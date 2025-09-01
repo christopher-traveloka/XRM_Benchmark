@@ -1,19 +1,40 @@
 import json
-import uuid
-from google.genai import types
+import os
 import sys
-from typing import List, Dict, Any
+import uuid
+from typing import Any, Dict, List
 
-SHOW_DIFF_CASES = True  # 开关：是否打印 solutions 差异 case
+from google.genai import types
+
+
+# This class duplicates stdout to a file
+class Tee(object):
+    def __init__(self, filename, mode="a"):
+        self.file = open(filename, mode)
+        self.stdout = sys.stdout
+        sys.stdout = self
+
+    def __del__(self):
+        sys.stdout = self.stdout
+        self.file.close()
+
+    def write(self, data):
+        self.file.write(data)
+        self.stdout.write(data)
+
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+
+
+SHOW_DIFF_CASES = True
 
 
 def process_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """这里暂时不做处理，直接返回"""
     return data
 
 
 def original_solution(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """直接用原始 JSON 的 match_status"""
     results = []
     for item in data:
         new_item = item.copy()
@@ -23,7 +44,6 @@ def original_solution(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """用 LLM 判断 match"""
     print("--- Running LLM_solution_1 (LLM-based solution) ---", file=sys.stderr)
 
     try:
@@ -48,7 +68,6 @@ def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         tvl_data = item.get("tvl", {})
         competitor_data = item.get("competitor", {})
 
-        # 提取字段
         tvl_size = tvl_data.get("hard_metrics", {}).get("room_size")
         tvl_name = tvl_data.get("soft_metrics", {}).get("room_group_name")
         tvl_bed_type = tvl_data.get("soft_metrics", {}).get("bed_type")
@@ -87,7 +106,6 @@ def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             .get("cancellation_policy_code")
         )
 
-        # 构造 prompt
         prompt = f"""
 You are an expert in hotel room matching. Focus on **human-friendly understanding**, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
 
@@ -95,31 +113,27 @@ You are an expert in hotel room matching. Focus on **human-friendly understandin
 
 1. **Room Name**:
 
-   * Core room type words must match (e.g., 'Superior', 'Deluxe').
-   * Differences in minor descriptors like "City View", "Non-Smoking", "Sea View" can be ignored.
-   * Words that indicate **upgrades or additional features** (e.g., "Plus", "Premier", "Ocean") should be treated as a mismatch **only if they change the core room experience**.
-   * If the **core concept** is different (e.g., 'Thematic Studio' vs 'Standard Studio'), treat as mismatched.
+    * Core room type words must match (e.g., 'Superior', 'Deluxe').
+    * Differences in minor descriptors like "City View", "Non-Smoking", "Sea View" can be ignored.
+    * Words that indicate **upgrades or additional features** (e.g., "Plus", "Premier", "Ocean") should be treated as a mismatch **only if they change the core room experience**.
+    * If the **core concept** is different (e.g., 'Thematic Studio' vs 'Standard Studio'), treat as mismatched.
 
 2. **Bed Type**:
 
-   * Beds that are partially compatible should be treated as matched (e.g., 'ONE\_DOUBLE\_BED\_OR\_TWO\_SINGLE\_BED' vs '1 Double').
-   * Queen, King, Double, or Twin beds are **generally compatible**; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
-   * If bed type is missing in TVL or COMP, assume it is compatible with the other room’s bed type.
-   * Treat “KING” and “1 king bed” as equivalent; similarly “DOUBLE” and “1 double bed”.
+    * Beds that are partially compatible should be treated as matched (e.g., 'ONE\_DOUBLE\_BED\_OR\_TWO\_SINGLE\_BED' vs '1 Double').
+    * Queen, King, Double, or Twin beds are **generally compatible**; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
+    * If bed type is missing in TVL or COMP, assume it is compatible with the other room’s bed type.
+    * Treat “KING” and “1 king bed” as equivalent; similarly “DOUBLE” and “1 double bed”.
 
 3. **Maximum Occupancy**:
 
-   * If missing, infer from bed type. Only mismatch if occupancy is clearly incompatible with bed type.
+    * If missing, infer from bed type. Only mismatch if occupancy is clearly incompatible with bed type.
 
-4. **Breakfast / Refundable**:
+4. **Overall Principle**:
 
-   * Differences here are soft indicators; do **not** determine mismatch unless critical for business.
-
-5. **Overall Principle**:
-
-   * Core room type + bed type are the **key indicators**.
-   * Minor differences in descriptors or extra words should **not prevent matching**.
-   * When in doubt, favor **matching** to maximize coverage.
+    * Core room type + bed type are the **key indicators**.
+    * Minor differences in descriptors or extra words should **not prevent matching**.
+    * When in doubt, favor **matching** to maximize coverage.
 
 Respond strictly with **"matched"** or **"mismatched"** only. **Do not include any explanations.**
 ---
@@ -127,15 +141,11 @@ TVL Room:
 - Name: {tvl_name}
 - Bed Type: {tvl_bed_type}
 - Occupancy: {tvl_occupancy}
-- Breakfast: {comp_breakfast}
-- Refundable: {comp_refundable}
 
 Competitor Room:
 - Name: {comp_name}
 - Bed Type: {comp_bed_type}
 - Occupancy: {comp_occupancy}
-- Breakfast: {comp_breakfast}
-- Refundable: {comp_refundable}
 """
 
         try:
@@ -154,7 +164,6 @@ Competitor Room:
                 print(f"⚠️ Unexpected LLM response: {response.text}", file=sys.stderr)
                 new_item["solution_match_status"] = "mismatched"
 
-            # 🔎 调试：打印带 uuid 的 Prompt Data
             print(
                 f"\n[Input Data - {uuid_str}] "
                 f"TVL:({tvl_name},{tvl_size},{tvl_bed_type},{tvl_occupancy},{tvl_breakfast},{tvl_refundable},{tvl_cancellation_policy_code}) "
@@ -173,7 +182,6 @@ Competitor Room:
 
 
 def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]):
-    """计算 inaccuracy、F1"""
     total_matched_by_solution = 0
     inaccurate_matches = 0
     total_size_error = 0
@@ -195,7 +203,6 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
         if tvl_size is None or competitor_size is None:
             continue
 
-        # ground truth: 尺寸差 <= 1 认为 true match
         is_true_match = abs(tvl_size - competitor_size) <= 1.0
         solution_match_status = item.get("solution_match_status")
 
@@ -246,7 +253,6 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
 
 
 def print_size_summary(all_data: List[Dict[str, Any]]):
-    """打印 size 分布"""
     tvl_sizes, competitor_sizes = [], []
     for item in all_data:
         try:
@@ -278,7 +284,6 @@ def print_size_summary(all_data: List[Dict[str, Any]]):
 def compare_solutions(
     input_data: List[Dict[str, Any]], solutions: Dict[str, List[Dict[str, Any]]]
 ):
-    """对比不同 solution 的结果"""
     if not SHOW_DIFF_CASES:
         return
 
@@ -338,7 +343,6 @@ def compare_solutions(
 
 
 def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """对 input_data 去重，如果所有字段的值都一样就去掉重复项"""
     seen = set()
     deduped = []
     for item in data:
@@ -354,6 +358,11 @@ def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def main():
+    start = 300
+    cnt = 120
+    output_filename = f"output_{start}-{cnt}.txt"
+    tee = Tee(output_filename, "w")
+
     print("Starting benchmark process...")
     files_to_process = ["./data/new_sample_20250827_batch_1.json"]
     all_raw_data = []
@@ -386,8 +395,6 @@ def main():
     for item in input_data:
         item["uuid_str"] = str(uuid.uuid4())
 
-    start = 0
-    cnt = 200
     input_data = input_data[start : start + cnt]
     print_size_summary(input_data)
 
@@ -403,6 +410,8 @@ def main():
         input_data,
         {"Original Solution": original_results, "LLM Solution 1": llm_results},
     )
+
+    del tee
 
 
 if __name__ == "__main__":
