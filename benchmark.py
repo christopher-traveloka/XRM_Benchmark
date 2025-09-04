@@ -107,56 +107,70 @@ def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         )
 
         prompt = f"""
-You are an expert in hotel room matching. Focus on **human-friendly understanding**, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
+You are a hotel room matching expert. Judge whether two rooms from different sources should be considered the same room type based on human-friendly understanding.
 
-### Matching Rules
 
-1. **Priority Order**:
-   Core room type (Room Name) > Bed Type > Maximum Occupancy > Room Size > Strong Differentiators.
+## Matching Rules (By Priority)
 
-2. **Room Name (Core Room Type)**:
+### 1. Room Type Tier Matching (Highest Priority)
+**Standard Room Type Tiers:**
+- Basic/Standard/Classic → Standard Room
+- Superior/Comfort/Plus → Superior Room
+- Deluxe/Premium → Deluxe Room
+- Executive/Club → Executive Room
+- Suite/Junior Suite → Suite Room
+- Villa/Penthouse/Apartment → Special Room Types
 
-   * Core words like *“Two Bedroom”, “Suite”, “Villa”, “Apartment”, “Room”* must match.
-   * **Grade words (Deluxe, Superior, Premier, Executive, Standard, Business, Classic, Economy, Basic)** must be strictly respected. Different grade → **mismatched**.
-   * Upgrade descriptors (e.g., “Plus”, “Corner”, “Club”, “Romantic”) → mismatch if they imply a real difference in experience or amenities.
+**Matching Rules:**
+- Same tier → matched
+- Adjacent tiers → matched 
+- Cross-tier (e.g., Standard vs Deluxe) → mismatched
 
-3. **Bed Type**:
+**Ignored Marketing Words:**
+Ignore differences in these words: Premier, Grand, Luxury, Social, Corner, City, Garden, Romantic, Modern, Classic, and all view-related words (River View, Mountain View, etc.)
 
-   * Beds that are partially compatible (Queen vs King, Double vs Queen) → **matched**.
-   * Twin / 2 Beds vs Queen/King → usually **mismatched**.
-   * If **bed type is missing on one side**, rely on **room name, occupancy, and size** to decide.
-   * ⚠️ Missing bed info **bias toward mismatched**, unless all other signals (room name, occupancy, size) are highly consistent.
+### 2. Occupancy Matching
+- Occupancy difference ≤2 people → matched
+- Occupancy difference >2 people → mismatched
+- When data is missing, infer reasonableness from room name and bed type
 
-4. **Room Size**:
+### 3. Bed Type Matching (Lowest Priority)
+**Compatible Bed Type Combinations:**
+- King ↔ Queen ↔ Double → compatible
+- 2 Single ↔ Twin → compatible  
+- 2 Single/Twin ↔ Queen/King → judge by occupancy
 
-   * If both sides have size info:
+**Incompatible:**
+- Single vs King/Queen (unless occupancy is 1)
 
-     * Difference ≤ 15% → can still be matched
-     * Difference > 20% → **mismatched** unless all other attributes match perfectly
-   * If bed info is missing, size difference > 15% → **mismatched**
+### 4. Mandatory Mismatch Situations
+The following differences must be marked as mismatched:
+- Private pool (private pool, plunge pool)
+- Kitchen facilities (kitchen, kitchenette)
+- Beachfront location (beachfront, oceanfront, overwater)
+- Special structures (penthouse, loft, duplex)
+- Spa/Sauna (onsen, sauna, hot tub)
+- Club privileges (club lounge access)
+- Dual key configurations (dual key, twin key)
+- Different accommodation types (hotel room vs apartment unit vs serviced apartment)
 
-5. **Maximum Occupancy**:
+### 5. Missing Data Handling
+- Missing bed type: Judge only by room name tier and occupancy
+- Missing occupancy: Infer from room name tier and bed type
+- Vague room name: Focus on bed type and occupancy compatibility
 
-   * Minor differences (e.g., 2 vs 3) → matched
-   * Large differences (e.g., 2 vs 6) → mismatched
+## Decision Principles
+1. **Room type tier is the decisive factor**
+2. **Marketing word differences do not affect matching**  
+3. **When in doubt, lean towards matched**
+4. **Mandatory mismatch situations are exceptions**
 
-6. **Strong Differentiators (always mismatch if only one has)**:
-   private pool, pool access, plunge pool, jacuzzi, hot tub,
-   beachfront / seafront / oceanfront / overwater,
-   penthouse / loft / duplex,
-   kitchen / kitchenette,
-   sauna / onsen,
-   club lounge access,
-   balcony, rooftop view, romantic package, executive floor
+## Output Requirements
+Strictly output one of the following:
+- `matched`
+- `mismatched`
 
-7. **Overall Principle**:
-
-   * Core room type, grade words, and bed type are **decisive**.
-   * Missing key attributes (bed type, occupancy) should **bias toward mismatched**.
-   * Large size difference or strong differentiators → **mismatched**, even if core name matches.
-   * When in doubt, be conservative → output **mismatched**.
-
-Respond strictly with **"matched"** or **"mismatched"** only. **Do not include any explanations.**
+**Do not include any explanations, reasons, or other text.**
 ---
 TVL Room:
 - Name: {tvl_name}
@@ -228,7 +242,11 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
         ):
             continue
 
-        is_true_match = abs(tvl_size - competitor_size) <= 1.0
+        # use SPD(Symmetrized Percent Difference (SPD)
+        # Formula: SPD = 2*|A - B| / (A + B)
+        is_true_match = (
+            2 * abs(tvl_size - competitor_size) / (tvl_size + competitor_size) <= 0.2
+        )
         solution_match_status = item.get("solution_match_status")
 
         if solution_match_status == "matched" or solution_match_status.startswith(
@@ -405,6 +423,8 @@ def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def main():
     start = 700
     cnt = 200
+    start = 0
+    cnt = 1600
     input_file_name = "xrm_sample_1600_datapoints_v2"
     output_filename = f"{input_file_name}_output_{start}-{cnt}.txt"
     tee = Tee(output_filename, "w")
