@@ -109,31 +109,52 @@ def LLM_solution_1(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         prompt = f"""
 You are an expert in hotel room matching. Focus on **human-friendly understanding**, not strict literal matching. Decide whether these two rooms from different sources should be considered the same type (**matched**) or not (**mismatched**).
 
-**Rules to consider:**
+### Matching Rules
 
-1. **Room Name**:
+1. **Priority Order**:
+   Core room type (Room Name) > Bed Type > Maximum Occupancy > Room Size > Strong Differentiators.
 
-    * Core room type words must match (e.g., 'Superior', 'Deluxe').
-    * Differences in minor descriptors like "City View", "Non-Smoking", "Sea View" can be ignored.
-    * Words that indicate **upgrades or additional features** (e.g., "Plus", "Premier", "Ocean") should be treated as a mismatch **only if they change the core room experience**.
-    * If the **core concept** is different (e.g., 'Thematic Studio' vs 'Standard Studio'), treat as mismatched.
+2. **Room Name (Core Room Type)**:
 
-2. **Bed Type**:
+   * Core words like *“Two Bedroom”, “Suite”, “Villa”, “Apartment”, “Room”* must match.
+   * **Grade words (Deluxe, Superior, Premier, Executive, Standard, Business, Classic, Economy, Basic)** must be strictly respected. Different grade → **mismatched**.
+   * Upgrade descriptors (e.g., “Plus”, “Corner”, “Club”, “Romantic”) → mismatch if they imply a real difference in experience or amenities.
 
-    * Beds that are partially compatible should be treated as matched (e.g., 'ONE\_DOUBLE\_BED\_OR\_TWO\_SINGLE\_BED' vs '1 Double').
-    * Queen, King, Double, or Twin beds are **generally compatible**; only completely incompatible beds (e.g., Single vs Triple) → mismatch.
-    * If bed type is missing in TVL or COMP, assume it is compatible with the other room’s bed type.
-    * Treat “KING” and “1 king bed” as equivalent; similarly “DOUBLE” and “1 double bed”.
+3. **Bed Type**:
 
-3. **Maximum Occupancy**:
+   * Beds that are partially compatible (Queen vs King, Double vs Queen) → **matched**.
+   * Twin / 2 Beds vs Queen/King → usually **mismatched**.
+   * If **bed type is missing on one side**, rely on **room name, occupancy, and size** to decide.
+   * ⚠️ Missing bed info **bias toward mismatched**, unless all other signals (room name, occupancy, size) are highly consistent.
 
-    * If missing, infer from bed type. Only mismatch if occupancy is clearly incompatible with bed type.
+4. **Room Size**:
 
-4. **Overall Principle**:
+   * If both sides have size info:
 
-    * Core room type + bed type are the **key indicators**.
-    * Minor differences in descriptors or extra words should **not prevent matching**.
-    * When in doubt, favor **matching** to maximize coverage.
+     * Difference ≤ 15% → can still be matched
+     * Difference > 20% → **mismatched** unless all other attributes match perfectly
+   * If bed info is missing, size difference > 15% → **mismatched**
+
+5. **Maximum Occupancy**:
+
+   * Minor differences (e.g., 2 vs 3) → matched
+   * Large differences (e.g., 2 vs 6) → mismatched
+
+6. **Strong Differentiators (always mismatch if only one has)**:
+   private pool, pool access, plunge pool, jacuzzi, hot tub,
+   beachfront / seafront / oceanfront / overwater,
+   penthouse / loft / duplex,
+   kitchen / kitchenette,
+   sauna / onsen,
+   club lounge access,
+   balcony, rooftop view, romantic package, executive floor
+
+7. **Overall Principle**:
+
+   * Core room type, grade words, and bed type are **decisive**.
+   * Missing key attributes (bed type, occupancy) should **bias toward mismatched**.
+   * Large size difference or strong differentiators → **mismatched**, even if core name matches.
+   * When in doubt, be conservative → output **mismatched**.
 
 Respond strictly with **"matched"** or **"mismatched"** only. **Do not include any explanations.**
 ---
@@ -168,8 +189,7 @@ Competitor Room:
                 f"\n[Input Data - {uuid_str}] "
                 f"TVL:({tvl_name},{tvl_size},{tvl_bed_type},{tvl_occupancy},{tvl_breakfast},{tvl_refundable},{tvl_cancellation_policy_code}) "
                 f"VS COMP:({comp_name},{comp_size},{comp_bed_type},{comp_occupancy},{comp_breakfast},{comp_refundable},{comp_cancellation_policy_code}) "
-                f"=> LLM: {new_item['solution_match_status']}",
-                file=sys.stderr,
+                f"=> LLM: {new_item['solution_match_status']}"
             )
 
         except Exception as e:
@@ -200,13 +220,21 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
             )
         except (ValueError, TypeError):
             continue
-        if tvl_size is None or competitor_size is None:
+        if (
+            tvl_size is None
+            or competitor_size is None
+            or tvl_size <= 0
+            or competitor_size <= 0
+        ):
             continue
 
         is_true_match = abs(tvl_size - competitor_size) <= 1.0
         solution_match_status = item.get("solution_match_status")
 
-        if solution_match_status == "matched":
+        if solution_match_status == "matched" or solution_match_status.startswith(
+            "MATCH_"
+        ):
+            solution_match_status = "matched"
             total_matched_by_solution += 1
             if not is_true_match:
                 inaccurate_matches += 1
@@ -214,7 +242,10 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
                 total_size_error += abs(tvl_size - competitor_size)
             else:
                 true_positives += 1
-        elif solution_match_status == "mismatched":
+        elif solution_match_status == "mismatched" or solution_match_status.startswith(
+            "NOT_MATCH"
+        ):
+            solution_match_status = "mismatched"
             if is_true_match:
                 false_negatives += 1
 
@@ -223,6 +254,12 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
         if total_matched_by_solution
         else 0
     )
+    overall_inaccuracy_rate = (
+        (inaccurate_matches / len(transformed_data) * 100)
+        if len(transformed_data)
+        else 0
+    )
+
     avg_size_error = (
         (total_size_error / inaccurate_matches) if inaccurate_matches else 0
     )
@@ -243,10 +280,13 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
 
     print("\n---")
     print(f"Results for '{solution_name}':")
-    print(f"Total entries evaluated: {len(transformed_data)}")
+    print(
+        f"Total entries evaluated: {len(transformed_data)}, total inaccurate entries: {inaccurate_matches}"
+    )
     print(f"Total matched by solution: {total_matched_by_solution}")
     print(f"Total inaccurate matches (>1 sqm diff): {inaccurate_matches}")
     print(f"Inaccuracy Rate: {inaccuracy_rate:.2f}%")
+    print(f"Overall Inaccuracy Rate: {overall_inaccuracy_rate:.2f}%")
     print(f"Average Size Error (inaccurates only): {avg_size_error:.2f} sqm")
     print(f"F1 Score: {f1_score:.4f}")
     print("---")
@@ -300,7 +340,7 @@ def compare_solutions(
         "equal?",
     ]
     print(
-        "{:<36} | {:<8} | {:<35} | {:<8} | {:<35} | {:<8} | {:<14} | {:<10}| {:<10}".format(
+        "{:<36} | {:<8} | {:<55} | {:<8} | {:<55} | {:<8} | {:<14} | {:<10}| {:<10}".format(
             *header
         )
     )
@@ -325,9 +365,15 @@ def compare_solutions(
         original_status = (
             solutions["Original Solution"][i].get("solution_match_status") or ""
         )
+        original_status = (
+            "matched" if original_status.startswith("MATCH_") else original_status
+        )
+        original_status = (
+            "mismatched" if original_status.startswith("NOT_MATCH") else original_status
+        )
         llm_status = solutions["LLM Solution 1"][i].get("solution_match_status") or ""
         print(
-            "{:<36} | {:<8} | {:<35} | {:<8} | {:<35} | {:<8} | {:<14} | {:<10} | {:<10}".format(
+            "{:<36} | {:<8} | {:<55} | {:<8} | {:<55} | {:<8} | {:<14} | {:<10} | {:<10}".format(
                 uuid_str,
                 case_id,
                 tvl_name,
@@ -346,25 +392,25 @@ def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     deduped = []
     for item in data:
-        # 只要 dict 的 key-value 对完全一样，就算重复
         item_key = json.dumps(item, sort_keys=True)
         if item_key not in seen:
             seen.add(item_key)
             deduped.append(item)
     print(
-        f"去重前: {len(data)} 条, 去重后: {len(deduped)} 条, 去掉: {len(data) - len(deduped)} 条"
+        f"before dedup {len(data)}, after dedup {len(deduped)}, removed {len(data) - len(deduped)}"
     )
     return deduped
 
 
 def main():
-    start = 300
-    cnt = 120
-    output_filename = f"output_{start}-{cnt}.txt"
+    start = 700
+    cnt = 200
+    input_file_name = "xrm_sample_1600_datapoints_v2"
+    output_filename = f"{input_file_name}_output_{start}-{cnt}.txt"
     tee = Tee(output_filename, "w")
 
     print("Starting benchmark process...")
-    files_to_process = ["./data/new_sample_20250827_batch_1.json"]
+    files_to_process = [f"./data/{input_file_name}.json"]
     all_raw_data = []
     for path in files_to_process:
         try:
@@ -394,6 +440,8 @@ def main():
 
     for item in input_data:
         item["uuid_str"] = str(uuid.uuid4())
+    original_results = original_solution(input_data)
+    evaluate_solution("Original Solution", original_results)
 
     input_data = input_data[start : start + cnt]
     print_size_summary(input_data)
