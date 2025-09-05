@@ -219,7 +219,7 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
     total_matched_by_solution = 0
     inaccurate_matches = 0
     total_size_error = 0
-    true_positives = false_positives = false_negatives = 0
+    true_positives = false_positives = false_negatives = true_negatives = 0
 
     for item in transformed_data:
         tvl_size_str = item.get("tvl", {}).get("hard_metrics", {}).get("room_size")
@@ -266,6 +266,8 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
             solution_match_status = "mismatched"
             if is_true_match:
                 false_negatives += 1
+            else:
+                true_negatives += 1
 
     inaccuracy_rate = (
         (inaccurate_matches / total_matched_by_solution * 100)
@@ -298,15 +300,20 @@ def evaluate_solution(solution_name: str, transformed_data: List[Dict[str, Any]]
 
     print("\n---")
     print(f"Results for '{solution_name}':")
-    print(
-        f"Total entries evaluated: {len(transformed_data)}, total inaccurate entries: {inaccurate_matches}"
-    )
+    print(f"Total entries evaluated: {len(transformed_data)}")
     print(f"Total matched by solution: {total_matched_by_solution}")
     print(f"Total inaccurate matches (>1 sqm diff): {inaccurate_matches}")
     print(f"Inaccuracy Rate: {inaccuracy_rate:.2f}%")
     print(f"Overall Inaccuracy Rate: {overall_inaccuracy_rate:.2f}%")
     print(f"Average Size Error (inaccurates only): {avg_size_error:.2f} sqm")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
     print(f"F1 Score: {f1_score:.4f}")
+    print("\nConfusion Matrix Counts:")
+    print(f"  True Positives (TP): {true_positives} -- we can't define match")
+    print(f"  False Positives (FP): {false_positives}")
+    print(f"  True Negatives (TN): {true_negatives}")
+    print(f"  False Negatives (FN): {false_negatives}  -- we can't define match")
     print("---")
 
 
@@ -424,7 +431,7 @@ def main():
     start = 700
     cnt = 200
     start = 0
-    cnt = 1600
+    cnt = 20
     input_file_name = "xrm_sample_1600_datapoints_v2"
     output_filename = f"{input_file_name}_output_{start}-{cnt}.txt"
     tee = Tee(output_filename, "w")
