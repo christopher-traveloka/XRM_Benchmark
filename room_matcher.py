@@ -32,7 +32,7 @@ class RoomMatcher:
     def _create_prompt(self, tvl_room: RoomData, comp_room: RoomData) -> str:
         """Create matching prompt for LLM"""
         return f"""
-You are a hotel room matching expert. Judge whether two rooms from different sources should be considered the same room type based on human-friendly understanding.
+You☎️ are a hotel room matching expert. Judge whether two rooms from different sources should be considered the same room type based on human-friendly understanding.
 
 ## Matching Rules (By Priority)
 
@@ -88,21 +88,19 @@ The following differences must be marked as mismatched:
 2. **Marketing word differences do not affect matching**  
 3. **When in doubt, lean towards matched**
 4. **Mandatory mismatch situations are exceptions**
+5. **Same accommodation type + similar features = likely matched**
 
 ## Output Requirements
-Output a JSON object with the following structure, do not add ```:
-{{
-  "decision": "matched" or "mismatched",
-  "confidence_score": 0.0 to 1.0,
-  "reasoning": "Brief explanation of the decision based on the rules above"
-}}
+Output an XML structure with the following format:
+<match_result>
+  <decision>matched</decision>
+  <confidence_score>0.95</confidence_score>
+  <reasoning>Both are 'Deluxe' tier, bed types are compatible (King vs Double), and mandatory mismatch factors are not present.</reasoning>
+</match_result>
 
-**Example:**
-{{
-  "decision": "matched",
-  "confidence_score": 0.95,
-  "reasoning": "Both are 'Deluxe' tier, bed types are compatible (King vs Double), and mandatory mismatch factors are not present."
-}}
+The decision should be either "matched" or "mismatched".
+The confidence_score should be a decimal between 0.0 and 1.0.
+The reasoning should be a brief explanation of the decision based on the rules above.
 
 ---
 TVL Room:
@@ -170,8 +168,8 @@ Competitor Room:
                     ),
                 )
 
-                # Parse response
-                match_result = MatchResult.from_llm_response(
+                # Parse XML response instead of JSON
+                match_result = MatchResult.from_llm_xml_response(
                     response.text, tvl_room, comp_room
                 )
 

@@ -322,7 +322,7 @@ def main():
     """Main execution function"""
     # Configuration
     start = 0
-    cnt = 5
+    cnt = 300
     input_file_name = "xrm_sample_1600_datapoints_v2"
     output_filename = f"./output/{input_file_name}_output_{start}-{cnt}.txt"
 
